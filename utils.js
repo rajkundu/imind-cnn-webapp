@@ -14,24 +14,36 @@ async function downloadFileWithChunking(fetchURL, progressCallback=undefined) {
     const response = await fetch(fetchURL);
     const contentLength = response.headers.get("Content-Length");
     const totalSize = contentLength ? parseInt(contentLength, 10) : 0;
+    // console.log(`[Download] content-length/totalSize = ${totalSize}`); // for debugging
 
     if (totalSize) {
         const reader = response.body.getReader();
-        const buffer = new Uint8Array(totalSize);
+        let buffer = new Uint8Array(totalSize);
         let offset = 0;
         let loadedSize = 0;
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+            
+            // Content-Length header may be erroneously small, so manually expand the download buffer
+            if (offset + value.length > buffer.length) {
+                const newBuffer = new Uint8Array(Math.max(buffer.length * 1.25, offset + value.length));
+                newBuffer.set(buffer, 0);
+                buffer = newBuffer;
+            }
 
             buffer.set(value, offset);
             offset += value.length;
             loadedSize += value.length;
+            // console.log(`[Download] loadedSize = ${loadedSize}`); // for debugging
 
             if (progressCallback) {
-                progressCallback(loadedSize / totalSize);
+                progressCallback(loadedSize / buffer.size);
             }
+        }
+        if (buffer.length > loadedSize) {
+            buffer = buffer.slice(0, loadedSize); // this is a copy, not a view, so that the full original buffer can be freed
         }
         return buffer;
     } else {
@@ -193,7 +205,7 @@ function htmlTableToCSV(tableEl) {
     }
     const rows = Array.from(tableEl.querySelectorAll('tr'));
     const csv = rows.map(row =>
-      Array.from(row.cells).map(cell => `"${cell.innerText.replace('"', '""')}"`).join(',')
+        Array.from(row.cells).map(cell => `"${cell.innerText.replace('"', '""')}"`).join(',')
     ).join('\n');
 
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -239,4 +251,28 @@ function makeModalElement(modalContentHTML) {
     `;
     document.body.appendChild(modalElement);
     return modalElement;
+}
+
+/**
+ * Helper function that resizes an image to fit into a square of a specified size by
+ * first padding it with black to make it a square, then resizing it
+ * @param {tf.tensor} imgTensor - TensorFlow tensor to be resized
+ * @param {int} targetSize - desired side-length of square into which image will be resized
+ */
+function resizeWithSquarePadding(imgTensor, targetSize) {
+    return tf.tidy(() => {
+        // Pad image to make shape into a square
+        const [h, w] = imgTensor.shape;
+        const sizeDiff = Math.abs(h - w);
+        const padTop = h < w ? Math.floor(sizeDiff / 2) : 0;
+        const padBottom = h < w ? sizeDiff - padTop : 0;
+        const padLeft = w < h ? Math.floor(sizeDiff / 2) : 0;
+        const padRight = w < h ? sizeDiff - padLeft : 0;
+        const imgTensorPadded = tf.pad(imgTensor, [
+            [padTop, padBottom],
+            [padLeft, padRight],
+            [0, 0]
+        ]);
+        return tf.image.resizeBilinear(imgTensorPadded, [targetSize, targetSize]);
+    });
 }
